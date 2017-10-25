@@ -12,6 +12,7 @@
 #include <netinet/in.h>
 #include <dlfcn.h>
 #include <pwd.h>
+#include <errno.h>
 
 #ifndef SOCK_PATH
 #define SOCK_PATH "%s/.tcp/socket-%d"
@@ -21,8 +22,8 @@
 #define MAX_SOCKETS 1024
 #endif
 
-int c_sockets = 0;
-struct {
+static int c_sockets = 0;
+static struct {
   int sockfd;
   unsigned short port;
 } sockets[MAX_SOCKETS];
@@ -87,14 +88,20 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
       newsock = socket(AF_UNIX, SOCK_STREAM, 0);
     } while (newsock != sockfd);
 
+    // Make sure we can store the socket.
+    if (!add_socket(sockfd, addr2->sin_port)) {
+      errno = ENOMEM;
+      return -1;
+    }
+
     // Get the correct filename and bind the file.
     get_path(newaddr.sun_path, sizeof(newaddr.sun_path), addr2->sin_port);
-    int result =  orig_func(sockfd, (const struct sockaddr*)&newaddr, sizeof(newaddr));
+    int result = orig_func(sockfd, (const struct sockaddr*)&newaddr, sizeof(newaddr));
 
-    // If bind() is successful, add the socket to the list of sockets we'll
-    // need to modify accept() and close() for.
-    if (result == 0) {
-      add_socket(sockfd, addr2->sin_port);
+    // If bind() was not sucessful, make sure it is removed from the list of
+    // stored sockets.
+    if (result != 0) {
+      remove_socket(c_sockets - 1);
     }
     return result;
   }
