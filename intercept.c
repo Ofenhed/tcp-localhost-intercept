@@ -1,7 +1,4 @@
 #define _GNU_SOURCE 1
-#ifndef CUSTOM
-#define ALL_SOCKETS
-#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -20,6 +17,10 @@
 
 #ifndef MAX_SOCKETS
 #define MAX_SOCKETS 1024
+#endif
+
+#ifndef BIND_INADDR_ANY
+#define BIND_INADDR_ANY 1
 #endif
 
 static int c_sockets = 0;
@@ -73,7 +74,7 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
   // Check if the socket qualifies, e.g. it tries to open a TCP port on
   // localhost (or INADDR_ANY if ALL_SOCKETS is defined)
   if (addr->sa_family == AF_INET && (
-#ifdef ALL_SOCKETS
+#if BIND_INADDR_ANY == 1
         addr2->sin_addr.s_addr == INADDR_ANY ||
 #endif
         addr2->sin_addr.s_addr == inet_addr("127.0.0.1"))) {
