@@ -23,16 +23,55 @@
 #define BIND_INADDR_ANY 1
 #endif
 
+#ifndef THREAD_SAFE
+#define THREAD_SAFE 1
+#endif
+
+#if THREAD_SAFE == 1
+#include <pthread.h>
+static pthread_mutex_t socklist_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
 static int c_sockets = 0;
 static struct {
   int sockfd;
   unsigned short port;
 } sockets[MAX_SOCKETS];
 
-static int get_path(char* buf, size_t len, unsigned short port) {
-  struct passwd *pw = getpwuid(getuid());
+static int get_path(char* out, size_t len, unsigned short port) {
+#if THREAD_SAFE == 1
+  struct passwd pwd;
+  struct passwd *result;
+  char *buf;
+  size_t bufsize;
+  int s;
+  bufsize = sysconf(_SC_GETPW_R_SIZE_MAX);
+  if (bufsize == -1)
+    bufsize = 16384;
+  buf = malloc(bufsize);
+  if (buf == NULL) {
+    perror("malloc");
+    exit(EXIT_FAILURE);
+  }
+  s = getpwuid_r(getuid(), &pwd, buf, bufsize, &result);
+  if (result == NULL) {
+    if (s == 0)
+      printf("Not found\n");
+    else {
+      errno = s;
+      perror("getpwnam_r");
+    }
+    free(buf);
+    exit(EXIT_FAILURE);
+  }
+  char *homedir = result->pw_dir;
 
-  return snprintf(buf, len, SOCK_PATH, pw->pw_dir, ntohs(port));
+  int ret = snprintf(out, len, SOCK_PATH, homedir, ntohs(port));
+  free(buf);
+  return ret;
+#else
+  return snprintf(out, len, SOCK_PATH, getpwuid(getuid())->pw_dir, ntohs(port));
+#endif
 }
 
 static int add_socket(int sockfd, unsigned short port)
@@ -80,6 +119,10 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
         addr2->sin_addr.s_addr == inet_addr("127.0.0.1"))) {
     printf("Calling modified bind\n");
 
+#if THREAD_SAFE == 1
+    pthread_mutex_lock(&socklist_mutex);
+#endif
+
     // Close the AF_INET socket and reopen it as a sock_stream. We can't change
     // the FD with the user, so we have to make sure that our new socket gets
     // the same FD.
@@ -91,6 +134,9 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 
     // Make sure we can store the socket.
     if (!add_socket(sockfd, addr2->sin_port)) {
+#if THREAD_SAFE == 1
+      pthread_mutex_unlock(&socklist_mutex);
+#endif
       errno = ENOMEM;
       return -1;
     }
@@ -104,6 +150,9 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
     if (result != 0) {
       remove_socket(c_sockets - 1);
     }
+#if THREAD_SAFE == 1
+    pthread_mutex_unlock(&socklist_mutex);
+#endif
     return result;
   }
   return orig_func(sockfd, addr, addrlen);
@@ -145,6 +194,9 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
   // If the user didn't provide a addr, or the socket can't be found in our
   // list, don't do anything else than call accept.
   if (addr != NULL) {
+#if THREAD_SAFE == 1
+    pthread_mutex_lock(&socklist_mutex);
+#endif
     int sock = find_socket(sockfd);
     if (sock != MAX_SOCKETS && sizeof(struct sockaddr_in) <= *addrlen) {
       // It is one of our sockets, forge it to make it look like the connection
@@ -156,12 +208,18 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
       *addrlen = sizeof(struct sockaddr_in);
     }
   }
+#if THREAD_SAFE == 1
+  pthread_mutex_unlock(&socklist_mutex);
+#endif
   return result;
 }
 
 int close(int sockfd)
 {
   int (*orig_func)(int) = dlsym(RTLD_NEXT, "close");
+#if THREAD_SAFE == 1
+  pthread_mutex_lock(&socklist_mutex);
+#endif
   int sock = find_socket(sockfd);
   // If close is called on one of our sockets, make sure that the opened file
   // is also removed.
@@ -171,5 +229,8 @@ int close(int sockfd)
     unlink(addr.sun_path);
     remove_socket(sock);
   }
+#if THREAD_SAFE == 1
+  pthread_mutex_unlock(&socklist_mutex);
+#endif
   return orig_func(sockfd);
 }
